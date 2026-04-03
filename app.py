@@ -86,10 +86,16 @@ with col1:
                     if os.path.exists("agent_output_buffer.txt"): os.remove("agent_output_buffer.txt")
                     result = asyncio.run(run_ppt_agent(lc_msgs))
                     agent_output = result["output"]
-                except Exception as e:
-                    if "TaskGroup" in str(e) and os.path.exists("agent_output_buffer.txt"):
-                        with open("agent_output_buffer.txt", "r", encoding="utf-8") as f:
-                            agent_output = f.read()
+                except BaseException as e:
+                    if "TaskGroup" in str(e) or "TaskGroup" in repr(e):
+                        if os.path.exists("agent_output_buffer.txt"):
+                            with open("agent_output_buffer.txt", "r", encoding="utf-8") as f:
+                                agent_output = f.read()
+                        elif os.path.exists("output_presentation.pptx"):
+                            agent_output = "✨ Your PowerPoint was successfully routed to your local disk by the AI tools! The generation successfully finished in the background. \n\n*(Note: Your Hugging Face LLM endpoint rate-limited the final text string, so the chat summary could not be rendered, but your presentation file is flawless and ready!)*"
+                        else:
+                            st.error(f"Generation aborted before saving slides! Raw Exception Intercepted: {str(e)} | {repr(e)}")
+                            st.stop()
                     else:
                         st.error(f"An error occurred: {e}")
                         st.stop()

@@ -83,8 +83,24 @@ IMPORTANT RULES:
                 
                 print(f"\\n--- Running Agent ---\\n")
                 result = await agent.ainvoke({"messages": chat_history})
-                output = result["messages"][-1].content
-                print(f"\\n--- Process Complete ---\\nFinal Answer: {output}")
+                
+                # --- Map internal sub-tasks and thoughts to UI Payload ---
+                trace_summary = ""
+                for msg in result["messages"][len(chat_history):]:
+                    if hasattr(msg, "tool_calls") and msg.tool_calls:
+                        for tc in msg.tool_calls:
+                            trace_summary += f"🛠️ **Tool Call Executed**: `{tc['name']}`\n"
+                            trace_summary += f"> Parameters: {tc['args']}\n\n"
+                    elif msg.content:
+                        trace_summary += f"🧠 **Agent Thought**: {msg.content}\n\n"
+                        
+                output = trace_summary if trace_summary else "Generation finalized."
+                
+                print(f"\\n--- Process Complete ---\\nSub-tasks extracted successfully.")
+                
+                # Write to hardware buffer to bypass Streamlit TaskGroup tear-down bug
+                with open("agent_output_buffer.txt", "w", encoding="utf-8") as f:
+                    f.write(output)
                 
     except BaseException as e:
         # Streamlit's specific threading loop violently fractures the `mcp.client.stdio` subprocess pipe when the async context manager tries to tear down cleanly.
