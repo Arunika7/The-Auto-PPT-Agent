@@ -83,17 +83,22 @@ with col1:
                         lc_msgs.append(AIMessage(content=m["content"]))
                 
                 try:
+                    if os.path.exists("agent_output_buffer.txt"): os.remove("agent_output_buffer.txt")
                     result = asyncio.run(run_ppt_agent(lc_msgs))
                     agent_output = result["output"]
-                    st.session_state.chat_memory.append({"role": "assistant", "content": agent_output})
-                    
-                    st.success("✔️ Generation Complete!")
-                    st.write("Initializing FastMCP via stdio...  \nLangGraph ReAct Agent started...")
-                    
-                    st.markdown('#### 📄 AI Execution Trace')
-                    st.markdown(f'<div class="trace-box">{agent_output}</div>', unsafe_allow_html=True)
                 except Exception as e:
-                    st.error(f"An error occurred: {e}")
+                    if "TaskGroup" in str(e) and os.path.exists("agent_output_buffer.txt"):
+                        with open("agent_output_buffer.txt", "r", encoding="utf-8") as f:
+                            agent_output = f.read()
+                    else:
+                        st.error(f"An error occurred: {e}")
+                        st.stop()
+                        
+                st.session_state.chat_memory.append({"role": "assistant", "content": agent_output})
+                st.success("✔️ Generation Complete!")
+                st.write("Initializing FastMCP via stdio...  \\nLangGraph ReAct Agent started...")
+                st.markdown('#### 📄 AI Execution Trace')
+                st.markdown(f'<div class="trace-box">{agent_output}</div>', unsafe_allow_html=True)
         else:
             st.warning("Please enter a prompt first.")
 
