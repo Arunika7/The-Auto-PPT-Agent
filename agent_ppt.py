@@ -41,31 +41,31 @@ async def run_ppt_agent(chat_history: list):
     # --- Step 1: Connect to Local MCP Server ---
     print("Connecting to FastMCP Server...")
     
-    # We use StdioServerParameters because running the server as a local subprocess pipe via stdout/stdin 
-    # is the fastest, lowest-latency transport for local python scripts compared to setting up a local REST API (SSE).
     server_param = StdioServerParameters(
         command="python",
         args=["ppt_mcp_server.py"] # Point specifically to our slide-maker server script
     )
     
-    # Establish the low-level read/write streams
-    async with stdio_client(server_param) as (read, write):
-        # Open a high-level ClientSession over those streams
-        async with ClientSession(read, write) as session:
-            await session.initialize()
-            
-            # --- Step 2: Tool Discovery via Langchain ---
-            # load_mcp_tools translates the server's tools into Langchain tools.
-            tools = await load_mcp_tools(session)
-            
-            # Mount Web Search natively
-            search_tool = DuckDuckGoSearchRun()
-            tools.append(search_tool)
-            
-            print(f"Loaded tools: {[t.name for t in tools]}")
-            
-            # --- Step 3: Agent Prompt Logic ---
-            system_prompt = '''You are a Presentation Design Chatbot. Use the available tools to satisfy the user's request.
+    output = None
+    
+    try:
+        # Establish the low-level read/write streams
+        async with stdio_client(server_param) as (read, write):
+            # Open a high-level ClientSession over those streams
+            async with ClientSession(read, write) as session:
+                await session.initialize()
+                
+                # --- Step 2: Tool Discovery via Langchain ---
+                tools = await load_mcp_tools(session)
+                
+                # Mount Web Search natively
+                search_tool = DuckDuckGoSearchRun()
+                tools.append(search_tool)
+                
+                print(f"Loaded tools: {[t.name for t in tools]}")
+                
+                # --- Step 3: Agent Prompt Logic ---
+                system_prompt = '''You are a Presentation Design Chatbot. Use the available tools to satisfy the user's request.
 
 IMPORTANT RULES:
 - Before writing any slide bullets, you MUST use duckduckgo_search to look up real facts to avoid hallucination. Do not guess facts.
@@ -76,18 +76,24 @@ IMPORTANT RULES:
 - ALWAYS call 'save_presentation' passing the file name (e.g., output_presentation.pptx) after finishing changes.
 - Never skip writing out a plan step-by-step first!
 - CRITICAL OUTPUT RULE: Your final text response to the user must ONLY be a warm summary of the presentation topics! DO NOT output or disclose any hex color codes, python logic, or tool names to the user!'''
+                
+                # 4. Create and run agent
+                print("Creating agent executor...")
+                agent = create_react_agent(llm, tools=tools, prompt=system_prompt)
+                
+                print(f"\\n--- Running Agent ---\\n")
+                result = await agent.ainvoke({"messages": chat_history})
+                output = result["messages"][-1].content
+                print(f"\\n--- Process Complete ---\\nFinal Answer: {output}")
+                
+    except BaseException as e:
+        # Streamlit's specific threading loop violently fractures the `mcp.client.stdio` subprocess pipe when the async context manager tries to tear down cleanly.
+        # This ALWAYS happens *after* the presentation is successfully processed and closed.
+        # If output was computed, we silently swallow the BaseExceptionGroup task errors.
+        if output is None:
+            raise e
             
-            # 4. Create and run agent
-            print("Creating agent executor...")
-            agent = create_react_agent(llm, tools=tools, prompt=system_prompt)
-            
-            print(f"\\n--- Running Agent ---\\n")
-            # We pass the full conversational chat history directly into the LangGraph 'messages' state!
-            result = await agent.ainvoke({"messages": chat_history})
-            output = result["messages"][-1].content
-            print(f"\\n--- Process Complete ---\\nFinal Answer: {output}")
-            
-            return {"output": output}
+    return {"output": output}
 
 if __name__ == "__main__":
     default_prompt = "Create a 5-slide presentation on the life cycle of a star for a 6th-grade class"
