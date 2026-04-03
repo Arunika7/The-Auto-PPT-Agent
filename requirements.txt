@@ -1,0 +1,9 @@
+mcp
+fastmcp
+python-pptx
+langchain
+langchain-mcp-adapters
+langchain-huggingface
+huggingface_hub
+python-dotenv
+streamlit

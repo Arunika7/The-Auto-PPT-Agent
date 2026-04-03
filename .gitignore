@@ -1,0 +1,19 @@
+# Environment variables
+.env
+
+# Python caches
+__pycache__/
+*.pyc
+
+# Local debug and test files
+*.log
+trace.txt
+test_debug.py
+
+# Output files
+*.pptx
+
+# Virtual environments
+venv/
+env/
+ENV/
