@@ -69,7 +69,7 @@ async def run_ppt_agent(chat_history: list):
 
 IMPORTANT RULES:
 - Before writing any slide bullets, you MUST use duckduckgo_search to look up real facts to avoid hallucination. Do not guess facts.
-- To add pictures, use duckduckgo_search to find a valid direct image URL (like Wikimedia .jpg links), then call 'add_image_slide' with that URL!
+- YOU MUST INCLUDE AT LEAST TWO PICTURES IN EVERY PRESENTATION! To do this, use duckduckgo_search to search for "direct .jpg image URL for [topic]" (like Wikimedia Commons). Once you find a URL that ends in .jpg or .png, call the 'add_image_slide' tool!
 - For NEW presentations: First plan, call 'create_presentation', then 'add_title_slide'. 
 - For standard body slides, call 'add_slide'. You MUST provide a 'theme_color_hex' string (like #0f172a or #450a0a) to match the topic's vibe dynamically!
 - For EDITING: If you need to modify an existing file, call 'open_presentation' first!
