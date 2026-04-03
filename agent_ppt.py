@@ -1,17 +1,34 @@
+"""
+Auto-PPT Agent: Orchestration Script
+------------------------------------
+This script acts as the "brain" (Client) of the architecture. It connects to the Hugging Face Serverless Inference API
+to power the LLM's reasoning loop. It then establishes an MCP (Model Context Protocol) connection over standard input/output (stdio)
+to the local ppt_mcp_server.py application, loads its available actions (tools), and wraps everything into a LangGraph ReAct loop.
+"""
+
 from mcp.client.stdio import stdio_client
 from mcp import ClientSession, StdioServerParameters
 from langchain_mcp_adapters.tools import load_mcp_tools
+from langchain_community.tools import DuckDuckGoSearchRun
 from langchain_huggingface import ChatHuggingFace, HuggingFaceEndpoint
 from langgraph.prebuilt import create_react_agent
 from langchain_core.messages import HumanMessage
 from dotenv import load_dotenv
 
+# Load sensitive environment variables from a local .env file
+# (e.g., HUGGINGFACEHUB_API_TOKEN) to ensure tokens are securely kept out of version control.
 load_dotenv()
 
 import asyncio
 import os
 
-async def run_ppt_agent(user_request: str):
+async def run_ppt_agent(chat_history: list):
+    """
+    Main orchestration function that mounts the LangChain application and connects it with the MCP Slide Server.
+    
+    Why this approach?: The async approach is essential because MCP's 'stdio_client' is fundamentally an asynchronous stream.
+    By using an async lifecycle natively, we prevent blocking the main IO thread and ensure seamless bidirectional tool execution.
+    """
     print("Initializing LLM...")
     # Initialize the LLM using native HuggingFace tooling
     llm_endpoint = HuggingFaceEndpoint(
@@ -21,38 +38,52 @@ async def run_ppt_agent(user_request: str):
     )
     llm = ChatHuggingFace(llm=llm_endpoint)
 
-    # 1. Connect to MCP Servers
+    # --- Step 1: Connect to Local MCP Server ---
     print("Connecting to FastMCP Server...")
+    
+    # We use StdioServerParameters because running the server as a local subprocess pipe via stdout/stdin 
+    # is the fastest, lowest-latency transport for local python scripts compared to setting up a local REST API (SSE).
     server_param = StdioServerParameters(
         command="python",
-        args=["ppt_mcp_server.py"]
+        args=["ppt_mcp_server.py"] # Point specifically to our slide-maker server script
     )
     
+    # Establish the low-level read/write streams
     async with stdio_client(server_param) as (read, write):
+        # Open a high-level ClientSession over those streams
         async with ClientSession(read, write) as session:
             await session.initialize()
             
-            # 2. Define Agent's Tools from the server
+            # --- Step 2: Tool Discovery via Langchain ---
+            # load_mcp_tools translates the server's tools into Langchain tools.
             tools = await load_mcp_tools(session)
+            
+            # Mount Web Search natively
+            search_tool = DuckDuckGoSearchRun()
+            tools.append(search_tool)
+            
             print(f"Loaded tools: {[t.name for t in tools]}")
             
-            # 3. Agent Prompt (Crucial for planning)
-            system_prompt = '''You are a Presentation Design Agent. Use the available tools to satisfy the user's request.
+            # --- Step 3: Agent Prompt Logic ---
+            system_prompt = '''You are a Presentation Design Chatbot. Use the available tools to satisfy the user's request.
 
-IMPORTANT: You MUST explicitly plan your actions before executing any tools.
-Step 1: Write out a plan with the expected slide titles and structure.
-Step 2: First, call 'create_presentation' to initialize the file.
-Step 3: For each slide title in your plan, generate an appropriate title and 3-5 bullet points, then call 'add_slide'. 
-        If you lack external search tools, gracefully hallucinate plausible and educational content.
-Step 4: After all slides are added, call 'save_presentation' passing the file name. Wait! For the filename use the format: output_presentation.pptx
-Step 5: Never skip the planning step!'''
+IMPORTANT RULES:
+- Before writing any slide bullets, you MUST use duckduckgo_search to look up real facts to avoid hallucination. Do not guess facts.
+- To add pictures, use duckduckgo_search to find a valid direct image URL (like Wikimedia .jpg links), then call 'add_image_slide' with that URL!
+- For NEW presentations: First plan, call 'create_presentation', then 'add_title_slide'. 
+- For standard body slides, call 'add_slide'. You MUST provide a 'theme_color_hex' string (like #0f172a or #450a0a) to match the topic's vibe dynamically!
+- For EDITING: If you need to modify an existing file, call 'open_presentation' first!
+- ALWAYS call 'save_presentation' passing the file name (e.g., output_presentation.pptx) after finishing changes.
+- Never skip writing out a plan step-by-step first!
+- CRITICAL OUTPUT RULE: Your final text response to the user must ONLY be a warm summary of the presentation topics! DO NOT output or disclose any hex color codes, python logic, or tool names to the user!'''
             
             # 4. Create and run agent
             print("Creating agent executor...")
             agent = create_react_agent(llm, tools=tools, prompt=system_prompt)
             
-            print(f"\\n--- Running Agent for request: '{user_request}' ---\\n")
-            result = await agent.ainvoke({"messages": [HumanMessage(content=user_request)]})
+            print(f"\\n--- Running Agent ---\\n")
+            # We pass the full conversational chat history directly into the LangGraph 'messages' state!
+            result = await agent.ainvoke({"messages": chat_history})
             output = result["messages"][-1].content
             print(f"\\n--- Process Complete ---\\nFinal Answer: {output}")
             

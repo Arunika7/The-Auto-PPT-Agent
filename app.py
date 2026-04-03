@@ -1,92 +1,125 @@
 import streamlit as st
 import asyncio
-import os
 from agent_ppt import run_ppt_agent
+from langchain_core.messages import HumanMessage, AIMessage
+import os
 
-st.set_page_config(page_title="Auto-PPT Studio", page_icon="📝", layout="wide")
+st.set_page_config(page_title="Auto-PPT Studio", page_icon="✨", layout="wide")
 
-# Custom CSS for premium aesthetic
+# CSS mimicking the classic setup exactly as pictured
 st.markdown("""
 <style>
-    .main {
-        background: linear-gradient(135deg, #111116, #1a1a24);
+    .stApp {
+        background-color: #0e1117;
+        color: #e2e8f0;
+    }
+    .main-header {
+        font-size: 2.2rem;
+        font-weight: 700;
+        color: #e6b8ff;
+        font-family: sans-serif;
+        margin-bottom: 5px;
+    }
+    .sub-header {
+        font-size: 1.3rem;
+        font-weight: 600;
         color: #ffffff;
+        margin-bottom: 25px;
     }
     .stButton>button {
-        background: linear-gradient(90deg, #7b2cbf, #9d4edd);
+        background-color: #9d4edd;
         color: white;
-        border-radius: 8px;
+        border-radius: 5px;
         border: none;
-        padding: 0.6rem 1.2rem;
-        transition: all 0.3s ease;
-        font-weight: 600;
-        letter-spacing: 0.5px;
+        padding: 5px 20px;
+        font-weight: bold;
     }
     .stButton>button:hover {
-        transform: translateY(-2px);
-        box-shadow: 0 6px 20px rgba(157, 78, 221, 0.4);
-        color: #fff;
+        background-color: #7b2cbf;
     }
-    h1 {
-        background: -webkit-linear-gradient(45deg, #e0aaff, #c77dff);
-        -webkit-background-clip: text;
-        -webkit-text-fill-color: transparent;
-        font-weight: 800;
-        margin-bottom: 0;
+    .status-panel {
+        background-color: #1e293b;
+        padding: 20px;
+        border-radius: 8px;
+        border: 1px solid #334155;
+    }
+    .trace-box {
+        background-color: #064e3b; 
+        color: #a7f3d0;
+        padding: 15px;
+        border-radius: 5px;
+        margin-top: 10px;
+        font-size: 0.95rem;
     }
 </style>
 """, unsafe_allow_html=True)
 
-st.title("🌟 Auto-PPT Studio")
-st.markdown("### Autonomous AI Presentation Architect")
-st.markdown("---")
+st.markdown('<div class="main-header">✨ Auto-PPT Studio</div>', unsafe_allow_html=True)
+st.markdown('<div class="sub-header">Autonomous AI Presentation Architect</div>', unsafe_allow_html=True)
+st.write("Provide a presentation topic, and the LangChain + MCP agent will dynamically plan the structure, generate educational content, and execute local disk tools to craft your PowerPoint file.")
 
-col1, col2 = st.columns([2, 1])
+st.write("")
+
+if "chat_memory" not in st.session_state:
+    st.session_state.chat_memory = []
+
+col1, col2 = st.columns([2.5, 1], gap="large")
 
 with col1:
-    st.markdown("Provide a presentation topic, and the LangChain + MCP agent will dynamically plan the structure, generate educational content, and execute local disk tools to craft your PowerPoint file.")
-    prompt = st.text_area(
-        "📝 Presentation Prompt Configuration", 
-        value="Create a 5-slide presentation on the life cycle of a star for a 6th-grade class",
-        height=150
-    )
-    generate_btn = st.button("🚀 Synthesize Presentation")
+    # Provide the default prompt about stars as requested
+    default_prompt = "Create a 5-slide presentation on the life cycle of a star for a 6th-grade class"
+    user_input = st.text_area("📄 Presentation Prompt Configuration", value=default_prompt, height=100)
+    
+    if st.button("🚀 Synthesize Presentation"):
+        if user_input:
+            st.session_state.chat_memory.append({"role": "user", "content": user_input})
+            
+            with st.spinner("Executing Toolchain..."):
+                lc_msgs = []
+                for m in st.session_state.chat_memory:
+                    if m["role"] == "user": 
+                        lc_msgs.append(HumanMessage(content=m["content"]))
+                    else: 
+                        lc_msgs.append(AIMessage(content=m["content"]))
+                
+                try:
+                    result = asyncio.run(run_ppt_agent(lc_msgs))
+                    agent_output = result["output"]
+                    st.session_state.chat_memory.append({"role": "assistant", "content": agent_output})
+                    
+                    st.success("✔️ Generation Complete!")
+                    st.write("Initializing FastMCP via stdio...  \nLangGraph ReAct Agent started...")
+                    
+                    st.markdown('#### 📄 AI Execution Trace')
+                    st.markdown(f'<div class="trace-box">{agent_output}</div>', unsafe_allow_html=True)
+                except Exception as e:
+                    st.error(f"An error occurred: {e}")
+        else:
+            st.warning("Please enter a prompt first.")
 
 with col2:
-    st.markdown("#### ⚙️ System Status")
-    st.info("🧠 **Agent:** Qwen-2.5-Coder\n\n🔌 **Protocol:** MCP stdio\n\n🎨 **Engine:** python-pptx")
-    # A placeholder dashboard image or visually pleasing layout component
-    st.markdown("<div style='padding:1rem; border:1px solid #333; border-radius:8px; text-align:center;'><p style='color:#a0a0a0'>Ready for Execution</p></div>", unsafe_allow_html=True)
-
-if generate_btn:
-    st.markdown("---")
-    with st.status("🧠 Agent runtime engaged...", expanded=True) as status:
-        try:
-            st.write("Initializing FastMCP via stdio...")
-            st.write("LangGraph ReAct Agent started...")
-            
-            # We run the async agent
-            result = asyncio.run(run_ppt_agent(prompt))
-            
-            status.update(label="✅ Generation Complete!", state="complete", expanded=False)
-            
-            st.markdown("### 📋 AI Execution Trace")
-            st.success(result.get("output"))
-            
-            output_file = "output_presentation.pptx"
-            if os.path.exists(output_file):
-                with open(output_file, "rb") as file:
-                    st.download_button(
-                        label="⬇️ Download Output File (.pptx)",
-                        data=file,
-                        file_name="output_presentation.pptx",
-                        mime="application/vnd.openxmlformats-officedocument.presentationml.presentation",
-                        use_container_width=True
-                    )
-            else:
-                st.error("Operation finished successfully, but `output_presentation.pptx` could not be found on disk.")
-                
-        except Exception as e:
-            status.update(label="❌ Fatal Error Detected", state="error")
-            st.error(f"Exception Trace:\n{type(e).__name__}: {e}")
-            st.warning("Hint: Check your terminal for deep tracebacks. This may be caused by an invalid `.env` HuggingFace Token, or a locked MCP stdio process.")
+    st.markdown("""
+    <div class="status-panel">
+        <h4 style="margin-top:0px; margin-bottom:15px; color:white;">⚙️ System Status</h4>
+        <p style="margin:5px 0;">🧠 Agent: Qwen-2.5-Coder</p>
+        <p style="margin:5px 0;">🔌 Protocol: MCP stdio</p>
+        <p style="margin:5px 0;">🎨 Engine: python-pptx</p>
+    </div>
+    """, unsafe_allow_html=True)
+    
+    st.markdown("<br>", unsafe_allow_html=True)
+    st.markdown('<div style="text-align: center; padding: 12px; border: 1px solid #334155; border-radius: 5px; color: #94a3b8; font-size:0.9rem;">Ready for Execution</div>', unsafe_allow_html=True)
+    
+    # Download button injection (Always visible, disabled if no file)
+    base_path = "output_presentation.pptx"
+    file_exists = os.path.exists(base_path)
+    file_data = open(base_path, "rb").read() if file_exists else b""
+    
+    st.download_button(
+        label="📥 Download .pptx" if file_exists else "⏳ Waiting for Generation...",
+        data=file_data,
+        file_name="output_presentation.pptx",
+        mime="application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        use_container_width=True,
+        disabled=not file_exists
+    )

@@ -1,15 +1,15 @@
 # Auto-PPT Agent
 
-An AI Agent built using LangChain and the Model Context Protocol (MCP) that can autonomously create PowerPoint presentations based on a single-sentence prompt.
+An autonomous conversational Agent built using Streamlit, LangGraph, and the Model Context Protocol (MCP) that can independently research facts, scrape images, and natively format cinematic PowerPoint presentations.
 
 ## Overview
 
-This project satisfies the requirements for the "AI Agents & MCP Architecture" assignment.
-The agent connects to a custom `python-pptx` FastMCP Server to access presentation-building tools. The LLM handles the logic and planning of what to write, and uses the MCP Server strictly to perform physical disk operations (file generation, slide generation, text manipulation).
+This project elevates typical AI pipelines by natively routing an open-source Hugging Face LLM into a sophisticated **MCP Server** utilizing `python-pptx`, achieving dynamic presentation rendering exclusively through autonomous tool execution.
 
 ## Architecture
-- `ppt_mcp_server.py`: A `FastMCP` server utilizing the `python-pptx` library to create PPT files, add slides, and populate bullet points.
-- `agent_ppt.py`: A `langchain` application utilizing `langchain-mcp-adapters` to dynamically load the presentation tools. It uses a `create_react_agent` executor loop, ensuring there is a strict planning step before any tools are invoked.
+- **`ppt_mcp_server.py`**: A stateless backend node governed by `FastMCP`. Exposes highly constrained formatting tools forcing 16:9 cinematic output, dynamic RGB color styling algorithms, and direct HTTP binary chunking to scrape internet image URLs into PowerPoint layouts.
+- **`agent_ppt.py`**: A `LangGraph` orchestrator looping over `langchain-mcp-adapters` and natively binding the `DuckDuckGoSearchRun` tool suite. Forces the LLM to research the internet for concrete truth before generating any parameters.
+- **`app.py`**: The dynamic Python Streamlit graphical user interface allowing memory-enabled multi-turn chat loops to continually modify the output natively.
 
 ## Prerequisites
 
@@ -36,13 +36,15 @@ The agent connects to a custom `python-pptx` FastMCP Server to access presentati
    echo HUGGINGFACEHUB_API_TOKEN="hf_your_token_here" > .env
    ```
 
-## Running the Agent
-Run the main script:
+## Running the Application
+Launch the rich graphical user interface via Streamlit:
 ```bash
-python agent_ppt.py
+streamlit run app.py
 ```
+This boots up a fully styled interactive dashboard where you can prompt the autonomous agent in natural language.
 
-The script will prompt you for an instructional prompt, or it will use a default ("Create a 5-slide presentation on the life cycle of a star for a 6th-grade class"). 
-
-## Expected Behavior
-You will see the agent planning its actions, deciding how many slides to build, and calling the `add_slide` MCP tool multiple times until the presentation is complete. Finally, it will call `save_presentation`, writing `output_presentation.pptx` into the same directory.
+### Debugging: MCP Inspector
+If you wish to test the backend PowerPoint logic without firing up the LLM, you can directly launch Anthropic's visual GUI natively via your terminal:
+```bash
+npx @modelcontextprotocol/inspector python ppt_mcp_server.py
+```

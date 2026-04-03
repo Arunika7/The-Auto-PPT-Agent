@@ -1,12 +1,11 @@
 # Auto-PPT Agent Reflection
 
 ## Where did your agent fail its first attempt?
-During initial testing or theoretical construction, the fundamental challenge with tool-calling agents is preventing them from executing tools linearly without a cohesive context. Without explicit constraints forcing the agent to plan out all slides *ahead of time*, an agent is likely to:
-- Generate Slide 1 and realize it doesn't know what Slide 2 should be.
-- Terminate the loop prematurely before finalizing the required slide count.
-- Add mismatched or non-educational content because it processes each text prompt individually instead of in a series. 
+During initial testing, the fundamental challenge with a barebones tool-calling agent is that it operates inside a vacuum resulting in massive hallucinations. Specifically:
+- The AI would hallucinate fake data, incorrect science, or entirely fabricated definitions under the guise of an "educational presentation."
+- It generated visually unappealing, default-plain-white slides with zero character.
 
-By hardcoding a prompt template condition (`"IMPORTANT: You MUST explicitly output a plan before executing any tool."`), the LangChain React agent generates the titles sequentially out-loud. Then, using its "scratchpad" memory state, it feeds each subsequent `add_slide` tool execution the memory of the full planned slide deck, reducing structural variance out of thin air.
+To resolve this completely, I integrated **LangChain Native Discovery Tools** (`DuckDuckGoSearchRun`). The logic natively forces the AI to scour the active internet and Wikipedia to verify all bullet points *prior* to executing the MCP PowerPoint commands. I also integrated an internet scraping tool (`requests`) directly into the python-pptx wrapper to intelligently drop web images directly onto the slide shapes, elevating the output quality.
 
 ## How did MCP prevent you from writing hardcoded scripts?
 Without the Model Context Protocol (MCP), integrating a PowerPoint builder into an agentic framework fundamentally requires hardcoding side-effects into the agent's logic. Typically:

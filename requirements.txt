@@ -6,4 +6,7 @@ langchain-mcp-adapters
 langchain-huggingface
 huggingface_hub
 python-dotenv
+ddgs
+langchain-community
+requests
 streamlit
