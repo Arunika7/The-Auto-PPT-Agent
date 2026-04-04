@@ -1,10 +1,11 @@
 """
-Auto-PPT Agent V2: Multi-Agent Pipeline
-----------------------------------------
-3-stage architecture:
-  Stage 1: PLANNER  — LLM generates structured JSON slide plan (with DuckDuckGo research backup)
-  Stage 2: CRITIC   — Python enforces design rules instantly
-  Stage 3: DESIGNER — Deterministic Python executes MCP tools
+Auto-PPT Agent V3: Multi-Agent Pipeline
+-----------------------------------------
+Architecture:
+  Stage 1: CONTENT  — LLM generates bullet-point facts (plain text, NOT JSON)
+  Stage 2: PLANNER  — Python structures slides from facts  
+  Stage 3: CRITIC   — Python enforces design rules
+  Stage 4: DESIGNER — Deterministic MCP tool execution
 """
 
 from mcp.client.stdio import stdio_client
@@ -13,7 +14,6 @@ from langchain_mcp_adapters.tools import load_mcp_tools
 from langchain_huggingface import ChatHuggingFace, HuggingFaceEndpoint
 from langchain_core.messages import HumanMessage, SystemMessage
 from dotenv import load_dotenv
-from ddgs import DDGS
 
 load_dotenv()
 
@@ -21,173 +21,181 @@ import asyncio
 import json
 import os
 import re
+import hashlib
+import requests
 
 # ──────────────────────────────────────────────
-# PROMPT TEMPLATES
+# PROMPT: Simple fact generation (NO JSON!)
 # ──────────────────────────────────────────────
 
-PLANNER_PROMPT = """Output ONLY a JSON slide plan. No explanation. No markdown.
+CONTENT_PROMPT = """You are an expert educator. Given a topic, write exactly 16 short facts about it.
 
-Rules: 5 slides, max 4 bullets each, max 8 words per bullet, titles max 6 words.
-Theme: space|business|education|tech|nature|medical
-Layout: title_only|text_only|text_left_image_right|image_background
-visual.type: none (title slides), image (others), diagram (processes)
-Slide 1 must be title_only.
+RULES:
+- Write exactly 16 facts, numbered 1-16.
+- Each fact must be ONE short sentence (max 8 words).
+- Cover: definition, key features, process/stages, importance, and fun facts.
+- Be specific and factual. No filler.
 
-Format: {"theme":"X","slides":[{"title":"T","subtitle":"S","bullets":[],"visual":{"type":"none","description":""},"layout":"title_only"},{"title":"T2","bullets":["b1","b2"],"visual":{"type":"image","description":"search query"},"layout":"text_left_image_right"}]}"""
+Example for "Solar System":
+1. Eight planets orbit our Sun
+2. Mercury is closest to Sun
+3. Venus is the hottest planet
+4. Earth supports liquid water life
+5. Mars has the tallest volcano
+6. Jupiter is the largest planet
+7. Saturn has beautiful ice rings
+8. Uranus rotates on its side
+9. Neptune has supersonic wind speeds
+10. Pluto is a dwarf planet
+11. Asteroids orbit between Mars Jupiter
+12. Comets have long glowing tails
+13. Sun contains 99% system mass
+14. Gravity holds everything in orbit
+15. Space exploration reveals new mysteries
+16. Solar system is 4.6 billion years old
+
+Now write 16 facts about: """
 
 
 # ──────────────────────────────────────────────
 # HELPER FUNCTIONS
 # ──────────────────────────────────────────────
 
-def _extract_json(text: str) -> dict | None:
-    """Extract a JSON object from LLM text output, handling markdown fences."""
-    text = text.strip()
-    if text.startswith("```"):
-        text = re.sub(r"^```(?:json)?\s*", "", text)
-        text = re.sub(r"\s*```$", "", text)
-        text = text.strip()
-    
-    try:
-        return json.loads(text)
-    except json.JSONDecodeError:
-        match = re.search(r'\{[\s\S]*\}', text)
-        if match:
-            try:
-                return json.loads(match.group())
-            except json.JSONDecodeError:
-                return None
-    return None
-
-
 def _extract_topic(user_prompt: str) -> str:
     """Extract the core topic from a user prompt."""
     prompt_lower = user_prompt.lower()
-    for keyword in ["on ", "about ", "regarding ", "for "]:
+    
+    # Try specific pattern first: "X-slide presentation on/about TOPIC for Y"
+    match = re.search(r'presentation\s+(?:on|about)\s+(.+?)(?:\s+for\s+|\s+in\s+|\s+with\s+|$)', user_prompt, re.I)
+    if match:
+        return match.group(1).strip()[:50]
+    
+    # Try keyword extraction
+    for keyword in ["about ", "on ", "regarding "]:
         if keyword in prompt_lower:
             idx = prompt_lower.index(keyword) + len(keyword)
             topic = user_prompt[idx:].strip()
-            # Remove trailing qualifiers
-            for stop in [" for ", " in ", " with "]:
+            for stop in [" for ", " in ", " with ", " to "]:
                 if stop in topic.lower():
                     topic = topic[:topic.lower().index(stop)]
-            return topic[:50]
+            return topic.strip()[:50]
+    
+    # Remove common prefixes
+    for prefix in ["create a ", "make a ", "generate a ", "build a "]:
+        if prompt_lower.startswith(prefix):
+            return user_prompt[len(prefix):].strip()[:50]
+    
     return user_prompt[:50]
 
 
-def _research_topic(topic: str) -> list[str]:
-    """Use DuckDuckGo to research real facts about a topic."""
+def _parse_facts(llm_output: str) -> list[str]:
+    """Parse numbered facts from LLM plain-text output."""
     facts = []
-    try:
-        with DDGS() as ddgs:
-            results = list(ddgs.text(f"{topic} key facts educational", max_results=5))
-            for r in results:
-                body = r.get("body", "")
-                if body and len(body) > 20:
-                    # Split into sentences and take short ones
-                    sentences = body.replace(". ", ".|").split("|")
-                    for sent in sentences[:2]:
-                        sent = sent.strip().rstrip(".")
-                        words = sent.split()
-                        if 3 <= len(words) <= 12:
-                            facts.append(" ".join(words[:8]))
-    except Exception:
-        pass
-    return facts[:12]  # Return max 12 facts
+    for line in llm_output.split("\n"):
+        line = line.strip()
+        # Match "1. fact" or "1) fact" or "- fact"
+        match = re.match(r'^\d+[\.\)]\s*(.+)', line)
+        if match:
+            fact = match.group(1).strip()
+            # Enforce max 8 words
+            words = fact.split()
+            if len(words) > 1:
+                facts.append(" ".join(words[:8]))
+        elif line.startswith("- "):
+            fact = line[2:].strip()
+            words = fact.split()
+            if len(words) > 1:
+                facts.append(" ".join(words[:8]))
+    return facts
 
 
 def _search_image(query: str) -> str | None:
-    """Get a high-quality image. Uses Picsum (always works) with DDG as bonus attempt."""
-    import requests
-    import hashlib
+    """Get a high-quality image. Picsum guaranteed, DDG as bonus."""
     
-    # Attempt 1: DuckDuckGo image search (may fail)
+    # Attempt 1: DuckDuckGo image search
     try:
+        from ddgs import DDGS
         with DDGS() as ddgs:
             results = list(ddgs.images(query, max_results=5))
             for r in results:
                 url = r.get("image", "")
                 if url and any(ext in url.lower() for ext in [".jpg", ".png", ".jpeg"]):
-                    # Verify the URL actually downloads
                     test = requests.head(url, timeout=5, headers={"User-Agent": "Mozilla/5.0"})
                     if test.status_code == 200:
                         return url
     except Exception:
         pass
     
-    # Attempt 2: Picsum.photos (ALWAYS works — guaranteed high-quality stock photos)
-    # Use a hash of the query as seed so same topic = same image consistently
+    # Attempt 2: Picsum (ALWAYS works)
     try:
         seed = int(hashlib.md5(query.encode()).hexdigest()[:8], 16) % 1000
         url = f"https://picsum.photos/seed/{seed}/800/500"
         resp = requests.get(url, timeout=10, allow_redirects=True, headers={"User-Agent": "Mozilla/5.0"})
         if resp.status_code == 200 and len(resp.content) > 1000:
-            return resp.url  # Returns the final redirected URL (direct image)
+            return resp.url
     except Exception:
         pass
     
     return None
 
 
-def _build_research_plan(topic: str, facts: list[str]) -> dict:
-    """Build a content-rich slide plan from researched facts."""
-    # Distribute facts across slides
-    chunk_size = max(1, len(facts) // 3)
-    chunks = [facts[i:i+chunk_size] for i in range(0, len(facts), chunk_size)]
-    while len(chunks) < 3:
-        chunks.append([f"Key aspect of {topic[:20]}"])
+def _pick_theme(topic: str) -> str:
+    """Auto-select theme based on topic keywords."""
+    t = topic.lower()
+    if any(w in t for w in ["star", "planet", "space", "galaxy", "universe", "moon", "sun", "astro", "cosmos"]):
+        return "space"
+    if any(w in t for w in ["business", "market", "economy", "finance", "company", "startup"]):
+        return "business"
+    if any(w in t for w in ["tech", "computer", "ai", "robot", "software", "code", "data", "machine", "algorithm"]):
+        return "tech"
+    if any(w in t for w in ["plant", "animal", "nature", "ocean", "forest", "climate", "earth", "water", "eco"]):
+        return "nature"
+    if any(w in t for w in ["health", "medicine", "body", "disease", "cell", "dna", "brain", "heart"]):
+        return "medical"
+    return "education"
+
+
+def _build_slide_plan(topic: str, facts: list[str], theme: str) -> dict:
+    """Build structured slide plan from facts."""
+    title_words = topic.split()[:5]
+    title_text = " ".join(w.capitalize() for w in title_words)
     
-    # Pick theme based on topic keywords
-    topic_lower = topic.lower()
-    if any(w in topic_lower for w in ["star", "planet", "space", "galaxy", "universe", "moon", "sun"]):
-        theme = "space"
-    elif any(w in topic_lower for w in ["business", "market", "economy", "finance", "company"]):
-        theme = "business"
-    elif any(w in topic_lower for w in ["tech", "computer", "ai", "robot", "software", "code", "data"]):
-        theme = "tech"
-    elif any(w in topic_lower for w in ["plant", "animal", "nature", "ocean", "forest", "climate", "earth"]):
-        theme = "nature"
-    elif any(w in topic_lower for w in ["health", "medicine", "body", "disease", "cell", "dna"]):
-        theme = "medical"
-    else:
-        theme = "education"
-    
-    title_short = " ".join(topic.split()[:5]).title()
+    # Distribute facts across 4 content slides (4 facts each)
+    while len(facts) < 16:
+        facts.append(f"Key aspect of {topic[:20]}")
     
     return {
         "theme": theme,
         "slides": [
             {
-                "title": title_short,
-                "subtitle": f"Understanding {topic[:30].title()}",
+                "title": title_text,
+                "subtitle": f"A Visual Guide to {topic[:30].title()}",
                 "bullets": [],
                 "visual": {"type": "none", "description": ""},
                 "layout": "title_only"
             },
             {
-                "title": f"Introduction to {topic.split()[0].title()}",
-                "bullets": chunks[0][:4] if chunks[0] else [f"Overview of {topic[:20]}"],
-                "visual": {"type": "image", "description": f"{topic} overview"},
+                "title": "What You Need to Know",
+                "bullets": facts[0:4],
+                "visual": {"type": "image", "description": f"{topic} overview introduction"},
                 "layout": "text_left_image_right"
             },
             {
-                "title": "Key Facts & Details",
-                "bullets": chunks[1][:4] if len(chunks) > 1 else ["Important details"],
-                "visual": {"type": "image", "description": f"{topic} details"},
+                "title": "Key Details",
+                "bullets": facts[4:8],
+                "visual": {"type": "image", "description": f"{topic} details close up"},
                 "layout": "text_left_image_right"
             },
             {
-                "title": "How It Works",
-                "bullets": chunks[2][:4] if len(chunks) > 2 else ["Process overview"],
-                "visual": {"type": "diagram", "description": f"{topic} process"},
+                "title": "The Process",
+                "bullets": facts[8:12],
+                "visual": {"type": "diagram", "description": f"{topic} process flow"},
                 "layout": "text_only"
             },
             {
                 "title": "Why It Matters",
-                "bullets": (chunks[3][:4] if len(chunks) > 3 else 
-                           [f"{topic[:20]} impacts our world", "Active area of research", "Growing importance"]),
-                "visual": {"type": "image", "description": f"{topic} importance"},
+                "bullets": facts[12:16],
+                "visual": {"type": "image", "description": f"{topic} importance impact"},
                 "layout": "text_left_image_right"
             },
             {
@@ -208,9 +216,10 @@ def _build_research_plan(topic: str, facts: list[str]) -> dict:
 async def run_ppt_agent(chat_history: list, progress_callback=None):
     """
     Multi-agent pipeline:
-      1. PLANNER: LLM → structured JSON plan (with research fallback)
-      2. CRITIC: Python → design rule enforcement
-      3. DESIGNER: Python → MCP tool execution
+      1. CONTENT:  LLM generates plain-text facts
+      2. PLANNER:  Python structures slides
+      3. CRITIC:   Python enforces design rules
+      4. DESIGNER: MCP tool execution
     """
     
     def _report(stage: str, detail: str):
@@ -218,7 +227,7 @@ async def run_ppt_agent(chat_history: list, progress_callback=None):
         if progress_callback:
             progress_callback(stage, detail)
     
-    # Extract the user's latest message
+    # Extract user prompt
     user_prompt = ""
     for msg in reversed(chat_history):
         if isinstance(msg, HumanMessage):
@@ -226,112 +235,112 @@ async def run_ppt_agent(chat_history: list, progress_callback=None):
             break
     
     if not user_prompt:
-        return {"output": "Error: No user prompt found.", "trace": []}
+        return {"output": "Error: No user prompt found."}
     
     topic = _extract_topic(user_prompt)
+    theme = _pick_theme(topic)
     trace_log = []
     
     # ══════════════════════════════════════════
-    # STAGE 0: RESEARCH (DuckDuckGo)
+    # STAGE 1: CONTENT GENERATION (LLM — plain text, NOT JSON)
     # ══════════════════════════════════════════
-    _report("RESEARCH", f"Researching: {topic}...")
-    trace_log.append(f"🔬 **Research Phase** — Gathering facts on '{topic}'...")
+    _report("CONTENT", f"Generating facts about: {topic}...")
+    trace_log.append(f"🧠 **Stage 1: CONTENT** — LLM generating facts about '{topic}'...")
     
-    facts = _research_topic(topic)
-    if facts:
-        trace_log.append(f"✅ Found {len(facts)} research facts from the web.")
-    else:
-        trace_log.append("⚠️ Web research returned no results. Using LLM knowledge.")
+    facts = []
     
-    # ══════════════════════════════════════════
-    # STAGE 1: PLANNER
-    # ══════════════════════════════════════════
-    _report("PLANNER", f"Planning slides for: {topic}...")
-    trace_log.append("\n🎯 **Stage 1: PLANNER** — Generating structured slide plan...")
-    
-    slide_plan = None
-    
-    # Try LLM planner first
     try:
-        _report("PLANNER", "Calling LLM...")
         llm_endpoint = HuggingFaceEndpoint(
             repo_id="Qwen/Qwen2.5-7B-Instruct",
-            max_new_tokens=1024,
-            temperature=0.3
+            max_new_tokens=512,
+            temperature=0.4
         )
         llm = ChatHuggingFace(llm=llm_endpoint)
         
-        planner_messages = [
-            SystemMessage(content=PLANNER_PROMPT),
-            HumanMessage(content=f"Create presentation about: {topic}")
+        content_messages = [
+            SystemMessage(content=CONTENT_PROMPT),
+            HumanMessage(content=topic)
         ]
         
-        planner_response = await llm.ainvoke(planner_messages)
-        planner_text = planner_response.content
-        _report("PLANNER", f"LLM responded ({len(planner_text)} chars)")
+        response = await llm.ainvoke(content_messages)
+        raw_text = response.content
+        _report("CONTENT", f"LLM responded ({len(raw_text)} chars)")
         
-        slide_plan = _extract_json(planner_text)
+        facts = _parse_facts(raw_text)
+        _report("CONTENT", f"Parsed {len(facts)} facts from LLM")
         
-        # Validate the plan has actual content  
-        if slide_plan and "slides" in slide_plan:
-            has_content = False
-            for s in slide_plan["slides"]:
-                bullets = s.get("bullets", [])
-                if bullets and any(len(b.strip()) > 3 for b in bullets):
-                    has_content = True
-                    break
-            if not has_content:
-                _report("PLANNER", "LLM JSON has no real content, falling back to research plan")
-                slide_plan = None
-            else:
-                trace_log.append("✅ LLM generated a valid slide plan.")
+        if len(facts) >= 8:
+            trace_log.append(f"✅ LLM generated {len(facts)} educational facts.")
         else:
-            slide_plan = None
+            trace_log.append(f"⚠️ LLM only produced {len(facts)} facts. Padding with defaults.")
     except Exception as e:
-        _report("PLANNER", f"LLM failed: {str(e)[:100]}")
-        slide_plan = None
+        _report("CONTENT", f"LLM failed: {str(e)[:80]}")
+        trace_log.append(f"⚠️ LLM content generation failed: {str(e)[:60]}")
     
-    # Fallback: build plan from research
-    if slide_plan is None:
-        trace_log.append("⚠️ LLM planner failed. Building plan from web research...")
-        slide_plan = _build_research_plan(topic, facts)
-        trace_log.append(f"✅ Research-based plan built: {len(slide_plan['slides'])} slides")
+    # Pad with sensible defaults if we didn't get enough facts
+    default_facts = [
+        f"{topic[:20]} is widely studied",
+        f"Has multiple key characteristics",
+        f"Important in modern understanding",
+        f"Involves complex processes",
+        f"Researchers continue exploring it",
+        f"Has real-world applications",
+        f"Impacts multiple fields of study",
+        f"Evolves over time naturally",
+        f"Connects to broader systems",
+        f"Requires careful analysis",
+        f"Found across many contexts",
+        f"Drives innovation and discovery",
+        f"Well-documented in literature",
+        f"Central to its field",
+        f"Continues to surprise scientists",
+        f"Future research looks promising",
+    ]
+    while len(facts) < 16:
+        facts.append(default_facts[len(facts) % len(default_facts)])
     
-    num_slides = len(slide_plan.get("slides", []))
-    trace_log.append(f"📊 Plan: **{num_slides} slides**, theme: **{slide_plan.get('theme', 'space')}**")
+    trace_log.append(f"📝 Content ready: {len(facts)} facts for 4 content slides.")
     
     # ══════════════════════════════════════════
-    # STAGE 2: CRITIC (Instant Python enforcement)
+    # STAGE 2: PLANNER (Python — builds structure)
+    # ══════════════════════════════════════════
+    _report("PLANNER", "Structuring slide plan...")
+    trace_log.append(f"\n🎯 **Stage 2: PLANNER** — Structuring into slides...")
+    
+    slide_plan = _build_slide_plan(topic, facts, theme)
+    num_slides = len(slide_plan["slides"])
+    trace_log.append(f"✅ Plan: {num_slides} slides, theme: '{theme}'")
+    
+    # ══════════════════════════════════════════
+    # STAGE 3: CRITIC (Python — design rules)
     # ══════════════════════════════════════════
     _report("CRITIC", "Enforcing design rules...")
-    trace_log.append("\n🔍 **Stage 2: CRITIC** — Enforcing design rules...")
+    trace_log.append("\n🔍 **Stage 3: CRITIC** — Enforcing design rules...")
     
-    for s in slide_plan.get("slides", []):
+    for s in slide_plan["slides"]:
         if "bullets" in s:
-            s["bullets"] = s["bullets"][:4]
-            s["bullets"] = [" ".join(b.split()[:8]) for b in s["bullets"] if b.strip()]
+            s["bullets"] = [" ".join(b.split()[:8]) for b in s["bullets"] if b.strip()][:4]
         if "title" in s:
             s["title"] = " ".join(s["title"].split()[:6])
         if "visual" not in s:
-            s["visual"] = {"type": "image", "description": s.get("title", "")}
+            s["visual"] = {"type": "image", "description": topic}
         if "layout" not in s:
             s["layout"] = "text_only"
     
     trace_log.append("✅ Design rules enforced.")
     
     # ══════════════════════════════════════════
-    # STAGE 3: DESIGNER (Deterministic Execution)
+    # STAGE 4: DESIGNER (MCP Tool Execution)
     # ══════════════════════════════════════════
     _report("DESIGNER", "Connecting to MCP Server...")
-    trace_log.append("\n🎨 **Stage 3: DESIGNER** — Executing MCP tool calls...")
+    trace_log.append("\n🎨 **Stage 4: DESIGNER** — Executing MCP tool calls...")
     
     server_param = StdioServerParameters(
         command="python",
         args=["ppt_mcp_server.py"]
     )
     
-    theme = slide_plan.get("theme", "space")
-    slides = slide_plan.get("slides", [])
+    slides = slide_plan["slides"]
     
     try:
         async with stdio_client(server_param) as (read, write):
@@ -347,65 +356,62 @@ async def run_ppt_agent(chat_history: list, progress_callback=None):
                         return result
                     return f"Tool '{name}' not found."
                 
-                # Step 1: Create presentation
+                # Create presentation
                 await call_tool("create_presentation")
-                trace_log.append("  🛠️ `create_presentation()` — 16:9 canvas initialized")
+                trace_log.append("  🛠️ `create_presentation()` — 16:9 canvas")
                 
-                # Step 2: Process each slide
                 for i, s in enumerate(slides):
                     slide_title = s.get("title", f"Slide {i+1}")
                     layout = s.get("layout", "text_only")
                     bullets = s.get("bullets", [])[:4]
                     visual = s.get("visual", {})
-                    visual_type = visual.get("type", "none") if isinstance(visual, dict) else "none"
-                    visual_desc = visual.get("description", "") if isinstance(visual, dict) else str(visual)
+                    vtype = visual.get("type", "none") if isinstance(visual, dict) else "none"
+                    vdesc = visual.get("description", "") if isinstance(visual, dict) else ""
                     subtitle = s.get("subtitle", "")
                     
                     # Title slide
                     if layout == "title_only":
-                        await call_tool("add_title_slide", title=slide_title, 
+                        await call_tool("add_title_slide", title=slide_title,
                                        subtitle=subtitle or f"Exploring {topic[:30].title()}", theme=theme)
                         trace_log.append(f"  🛠️ `add_title_slide('{slide_title}')`")
                         continue
                     
                     # Diagram slide
-                    if visual_type == "diagram":
-                        mermaid_code = f"flowchart LR\n    A[{slide_title}] --> B[{bullets[0] if bullets else 'Step 1'}]\n    B --> C[{bullets[1] if len(bullets) > 1 else 'Step 2'}]\n    C --> D[{bullets[2] if len(bullets) > 2 else 'Result'}]"
-                        
-                        await call_tool("add_diagram_slide", title=slide_title, mermaid_code=mermaid_code, theme=theme)
+                    if vtype == "diagram" and bullets:
+                        mermaid = f"flowchart LR\n    A[{bullets[0]}] --> B[{bullets[1] if len(bullets) > 1 else 'Next'}]\n    B --> C[{bullets[2] if len(bullets) > 2 else 'Then'}]\n    C --> D[{bullets[3] if len(bullets) > 3 else 'Result'}]"
+                        await call_tool("add_diagram_slide", title=slide_title, mermaid_code=mermaid, theme=theme)
                         trace_log.append(f"  🛠️ `add_diagram_slide('{slide_title}')`")
                         continue
                     
                     # Image search
                     image_url = ""
-                    if visual_type == "image" and visual_desc:
-                        _report("DESIGNER", f"  🔎 Searching: {visual_desc[:40]}...")
-                        image_url = _search_image(visual_desc) or ""
+                    if vtype == "image" and vdesc:
+                        _report("DESIGNER", f"  🔎 Finding image: {vdesc[:40]}...")
+                        image_url = _search_image(vdesc) or ""
                         if image_url:
-                            trace_log.append(f"  🔎 Image found for '{visual_desc[:25]}...'")
+                            trace_log.append(f"  🔎 Image embedded for '{vdesc[:25]}'")
                         else:
-                            trace_log.append(f"  ⚠️ No image for '{visual_desc[:25]}...'")
+                            trace_log.append(f"  ⚠️ No image for '{vdesc[:25]}'")
                             if layout in ("text_left_image_right", "image_background"):
                                 layout = "text_only"
                     
                     # Content slide
                     await call_tool("add_slide", title=slide_title, bullet_points=bullets,
                                    layout_type=layout, image_url=image_url, theme=theme)
-                    trace_log.append(f"  🛠️ `add_slide('{slide_title}', layout='{layout}')` — {len(bullets)} bullets")
+                    trace_log.append(f"  🛠️ `add_slide('{slide_title}', '{layout}')` — {len(bullets)} bullets")
                 
-                # Step 3: Save
+                # Save
                 await call_tool("save_presentation", filename="output_presentation.pptx")
-                trace_log.append(f"\n💾 `save_presentation()` — File written!")
-                trace_log.append(f"\n✨ **Complete!** {len(slides)} slides, '{theme}' theme.")
+                trace_log.append(f"\n💾 Saved! {len(slides)} slides, '{theme}' theme.")
+                trace_log.append(f"\n✨ **Pipeline Complete!**")
                 
     except BaseException as e:
         if os.path.exists("output_presentation.pptx"):
-            trace_log.append("\n💾 Saved successfully (background cleanup handled).")
+            trace_log.append("\n💾 Saved successfully (cleanup handled).")
         else:
             raise e
     
     output = "\n".join(trace_log)
-    
     with open("agent_output_buffer.txt", "w", encoding="utf-8") as f:
         f.write(output)
     
@@ -414,7 +420,7 @@ async def run_ppt_agent(chat_history: list, progress_callback=None):
 
 if __name__ == "__main__":
     default_prompt = "Create a 5-slide presentation on the life cycle of a star for a 6th-grade class"
-    user_prompt = input(f"Enter prompt (or Enter for default): ").strip()
+    user_prompt = input("Enter prompt (or Enter for default): ").strip()
     if not user_prompt:
         user_prompt = default_prompt
     
