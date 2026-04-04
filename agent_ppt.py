@@ -26,32 +26,21 @@ import re
 # PROMPT TEMPLATES
 # ──────────────────────────────────────────────
 
-PLANNER_PROMPT = """You are a presentation planner. Given a user's topic, output ONLY a valid JSON object for a slide deck.
+PLANNER_PROMPT = """You are a presentation planner. Given a topic, output ONLY a JSON object.
 
-STRICT RULES:
-- Output ONLY the JSON object. No markdown, no explanation, no code fences.
-- Max 6 slides total (unless user specifies more).
-- Max 4 bullets per slide. Max 8 words per bullet.
-- Titles must be <= 6 words.
-- Every slide MUST have a visual idea.
-- Choose ONE theme for the whole deck from: space, business, education, tech, nature, medical
-- For visual.type: use "image" for real-world topics, "diagram" for processes/systems/workflows, "none" for title slides.
-- For layout: choose from text_left_image_right, image_background, text_only, title_only.
-- First slide should always be layout "title_only" with visual.type "none".
+RULES:
+- Output raw JSON only. No markdown. No explanation. No code fences.
+- 5-6 slides. Max 4 bullets per slide. Max 8 words per bullet.
+- Titles max 6 words.
+- theme: one of space, business, education, tech, nature, medical
+- layout: one of title_only, text_only, text_left_image_right, image_background
+- visual.type: "none" for title slide, "image" for others, "diagram" for processes
+- First slide MUST be title_only layout.
 
-JSON FORMAT:
-{
-  "theme": "space",
-  "slides": [
-    {
-      "title": "Short Title Here",
-      "subtitle": "Only for title_only slides",
-      "bullets": ["Point one", "Point two"],
-      "visual": {"type": "image", "description": "what to search for"},
-      "layout": "text_left_image_right"
-    }
-  ]
-}"""
+EXAMPLE for "Solar System":
+{"theme":"space","slides":[{"title":"The Solar System","subtitle":"A Journey Through Space","bullets":[],"visual":{"type":"none","description":""},"layout":"title_only"},{"title":"Inner Rocky Planets","bullets":["Mercury closest to Sun","Venus hottest planet","Earth supports life","Mars the red planet"],"visual":{"type":"image","description":"inner planets solar system"},"layout":"text_left_image_right"},{"title":"Gas Giant Worlds","bullets":["Jupiter largest planet","Saturn famous for rings","Uranus rotates sideways","Neptune extreme winds"],"visual":{"type":"image","description":"jupiter saturn gas giants"},"layout":"text_left_image_right"},{"title":"Planet Formation Process","bullets":["Dust cloud collapses","Disk forms around star","Particles clump together"],"visual":{"type":"diagram","description":"planet formation process"},"layout":"text_only"},{"title":"Key Takeaways","subtitle":"Exploring Our Cosmic Neighborhood","bullets":["8 unique planets","Diverse environments exist"],"visual":{"type":"none","description":""},"layout":"title_only"}]}
+
+Now generate JSON for the given topic. Output ONLY the JSON:"""
 
 CRITIC_PROMPT = """You are a presentation design critic. You will receive a JSON slide plan.
 
@@ -96,20 +85,43 @@ def _extract_json(text: str) -> dict | None:
 
 
 def _search_image(query: str) -> str | None:
-    """Search DuckDuckGo for an image URL matching the query."""
+    """Search for an image URL. Tries DuckDuckGo images, then falls back to Wikimedia/Unsplash."""
+    
+    # Attempt 1: DuckDuckGo image search
     try:
         with DDGS() as ddgs:
             results = list(ddgs.images(query, max_results=5))
             for r in results:
                 url = r.get("image", "")
-                if url and (url.endswith(".jpg") or url.endswith(".png") or url.endswith(".jpeg") 
-                           or ".jpg" in url or ".png" in url):
+                if url and any(ext in url.lower() for ext in [".jpg", ".png", ".jpeg"]):
                     return url
-            # Fallback: return first result regardless of extension
             if results:
                 return results[0].get("image", None)
     except Exception:
         pass
+    
+    # Attempt 2: DuckDuckGo text search for image URLs
+    try:
+        with DDGS() as ddgs:
+            results = list(ddgs.text(f"{query} site:upload.wikimedia.org .jpg", max_results=3))
+            for r in results:
+                href = r.get("href", "") or r.get("link", "")
+                if href and any(ext in href.lower() for ext in [".jpg", ".png", ".jpeg"]):
+                    return href
+    except Exception:
+        pass
+    
+    # Attempt 3: Unsplash Source (always works, free, no auth)
+    try:
+        safe_query = query.replace(" ", ",").replace("'", "")[:50]
+        url = f"https://source.unsplash.com/800x600/?{safe_query}"
+        import requests
+        resp = requests.get(url, timeout=8, allow_redirects=True, headers={"User-Agent": "Mozilla/5.0"})
+        if resp.status_code == 200 and len(resp.content) > 1000:
+            return resp.url  # Unsplash redirects to the actual image
+    except Exception:
+        pass
+    
     return None
 
 
@@ -166,17 +178,32 @@ async def run_ppt_agent(chat_history: list, progress_callback=None):
     planner_response = await llm.ainvoke(planner_messages)
     planner_text = planner_response.content
     
+    # Log raw LLM output for debugging
+    _report("PLANNER", f"Raw LLM output ({len(planner_text)} chars): {planner_text[:300]}...")
+    
     slide_plan = _extract_json(planner_text)
-    if slide_plan is None:
-        trace_log.append("⚠️ Planner failed to produce valid JSON. Using fallback plan.")
+    if slide_plan is None or "slides" not in slide_plan or len(slide_plan.get("slides", [])) == 0:
+        trace_log.append("⚠️ Planner JSON parse failed. Building intelligent fallback plan...")
+        # Build a content-rich fallback plan derived from the user's actual topic
+        topic_short = user_prompt.split("on ")[-1].split("about ")[-1].strip()[:40] if "on " in user_prompt.lower() or "about " in user_prompt.lower() else user_prompt[:40]
         slide_plan = {
-            "theme": "tech",
+            "theme": "education",
             "slides": [
-                {"title": user_prompt[:30], "subtitle": "AI-Generated Presentation", "bullets": [], 
+                {"title": topic_short[:30], "subtitle": "An Educational Overview", "bullets": [],
                  "visual": {"type": "none", "description": ""}, "layout": "title_only"},
-                {"title": "Key Points", "bullets": ["Generated from prompt", "Powered by AI", "MCP Architecture"],
-                 "visual": {"type": "image", "description": user_prompt}, "layout": "text_left_image_right"},
-                {"title": "Summary", "bullets": ["Thank you"], 
+                {"title": f"What is {topic_short[:20]}?",
+                 "bullets": [f"Definition of {topic_short[:15]}", "Key characteristics", "Why it matters", "Historical context"],
+                 "visual": {"type": "image", "description": topic_short}, "layout": "text_left_image_right"},
+                {"title": "Core Concepts",
+                 "bullets": ["Fundamental principles", "Important mechanisms", "Scientific evidence", "Real-world examples"],
+                 "visual": {"type": "image", "description": f"{topic_short} diagram educational"}, "layout": "text_left_image_right"},
+                {"title": "Key Stages",
+                 "bullets": ["Stage 1: Beginning", "Stage 2: Development", "Stage 3: Transformation", "Stage 4: Outcome"],
+                 "visual": {"type": "diagram", "description": f"{topic_short} process stages"}, "layout": "text_only"},
+                {"title": f"Why {topic_short[:20]} Matters",
+                 "bullets": ["Practical applications", "Impact on daily life", "Future discoveries"],
+                 "visual": {"type": "image", "description": f"{topic_short} importance"}, "layout": "text_left_image_right"},
+                {"title": "Summary", "subtitle": f"Understanding {topic_short[:20]}", "bullets": [],
                  "visual": {"type": "none", "description": ""}, "layout": "title_only"}
             ]
         }
@@ -249,8 +276,8 @@ async def run_ppt_agent(chat_history: list, progress_callback=None):
                     visual_desc = visual.get("description", "") if isinstance(visual, dict) else str(visual)
                     subtitle = s.get("subtitle", "")
                     
-                    # Title slide
-                    if layout == "title_only" and i == 0:
+                    # Title slide (works at any position — intro AND summary)
+                    if layout == "title_only":
                         await call_tool("add_title_slide", title=slide_title, subtitle=subtitle or "AI-Generated Presentation", theme=theme)
                         trace_log.append(f"  🛠️ `add_title_slide('{slide_title}')` — Title slide rendered")
                         continue
