@@ -1,0 +1,14 @@
+🔬 **Stage 1: RESEARCH (MCP)** — Consulting Research Server...
+🧠 **Stage 2: CONTENT** — LLM synthesizing research into bullet points...
+🎯 **Stage 3: PLANNER** — Drafting slide structure and theme...
+
+🎨 **Stage 4: DESIGNER (MCP)** — Rendering slides via PPT Server...
+  🛠️ `create_presentation()` — 16:9 canvas initialized
+  🛠️ `add_title_slide()` — Slide 1 rendered
+  🛠️ `add_slide()` — Content slide 2 rendered
+  🛠️ `add_slide()` — Content slide 3 rendered
+  🛠️ `add_diagram_slide()` — Mermaid diagram added
+  🛠️ `add_slide()` — Content slide 5 rendered
+  🛠️ `add_title_slide()` — Slide 6 rendered
+
+💾 Saved! Pipeline complete.
