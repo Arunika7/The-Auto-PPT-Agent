@@ -22,12 +22,12 @@ from io import BytesIO
 # DESIGN SYSTEM: Theme Palettes
 # ──────────────────────────────────────────────
 THEMES = {
-    "space":     {"bg": "#0f0235", "title": "#c084fc", "text": "#e0e7ff", "accent": "#7c3aed"},
-    "business":  {"bg": "#1e293b", "title": "#60a5fa", "text": "#e2e8f0", "accent": "#3b82f6"},
-    "education": {"bg": "#1a1a2e", "title": "#fbbf24", "text": "#fef3c7", "accent": "#f59e0b"},
-    "tech":      {"bg": "#0c0a09", "title": "#22d3ee", "text": "#d4d4d8", "accent": "#06b6d4"},
-    "nature":    {"bg": "#052e16", "title": "#86efac", "text": "#dcfce7", "accent": "#22c55e"},
-    "medical":   {"bg": "#1e1b4b", "title": "#a78bfa", "text": "#e0e7ff", "accent": "#8b5cf6"},
+    "space":     {"bg": "#0b0c2a", "title": "#e879f9", "text": "#e0e7ff", "accent": "#a855f7"},
+    "business":  {"bg": "#0f172a", "title": "#38bdf8", "text": "#e2e8f0", "accent": "#0ea5e9"},
+    "education": {"bg": "#1c1917", "title": "#fbbf24", "text": "#fef3c7", "accent": "#f59e0b"},
+    "tech":      {"bg": "#020617", "title": "#34d399", "text": "#d1fae5", "accent": "#10b981"},
+    "nature":    {"bg": "#0a1628", "title": "#4ade80", "text": "#dcfce7", "accent": "#16a34a"},
+    "medical":   {"bg": "#1a0f2e", "title": "#c4b5fd", "text": "#ede9fe", "accent": "#8b5cf6"},
 }
 
 def _hex_to_rgb(hex_str: str) -> RGBColor:
