@@ -10,3 +10,4 @@ ddgs
 langchain-community
 requests
 streamlit
+langgraph

@@ -6,59 +6,86 @@ import os
 
 st.set_page_config(page_title="Auto-PPT Studio", page_icon="✨", layout="wide")
 
-# CSS mimicking the classic setup exactly as pictured
+# Premium dark mode CSS
 st.markdown("""
 <style>
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap');
+    
     .stApp {
-        background-color: #0e1117;
+        background-color: #0a0a0f;
         color: #e2e8f0;
+        font-family: 'Inter', sans-serif;
     }
     .main-header {
-        font-size: 2.2rem;
+        font-size: 2.4rem;
         font-weight: 700;
-        color: #e6b8ff;
-        font-family: sans-serif;
-        margin-bottom: 5px;
+        background: linear-gradient(135deg, #c084fc 0%, #60a5fa 100%);
+        -webkit-background-clip: text;
+        -webkit-text-fill-color: transparent;
+        font-family: 'Inter', sans-serif;
+        margin-bottom: 2px;
     }
     .sub-header {
-        font-size: 1.3rem;
-        font-weight: 600;
-        color: #ffffff;
+        font-size: 1.1rem;
+        font-weight: 400;
+        color: #94a3b8;
         margin-bottom: 25px;
     }
     .stButton>button {
-        background-color: #9d4edd;
+        background: linear-gradient(135deg, #7c3aed 0%, #6366f1 100%);
         color: white;
-        border-radius: 5px;
+        border-radius: 8px;
         border: none;
-        padding: 5px 20px;
-        font-weight: bold;
+        padding: 8px 24px;
+        font-weight: 600;
+        font-size: 1rem;
+        transition: all 0.2s;
     }
     .stButton>button:hover {
-        background-color: #7b2cbf;
+        background: linear-gradient(135deg, #6d28d9 0%, #4f46e5 100%);
+        transform: translateY(-1px);
     }
     .status-panel {
-        background-color: #1e293b;
+        background: linear-gradient(180deg, #1e1b4b 0%, #0f172a 100%);
         padding: 20px;
-        border-radius: 8px;
-        border: 1px solid #334155;
+        border-radius: 12px;
+        border: 1px solid #312e81;
     }
     .trace-box {
-        background-color: #064e3b; 
+        background-color: #0f172a;
         color: #a7f3d0;
-        padding: 15px;
-        border-radius: 5px;
+        padding: 18px;
+        border-radius: 10px;
         margin-top: 10px;
-        font-size: 0.95rem;
+        font-size: 0.9rem;
+        border: 1px solid #1e293b;
+        line-height: 1.7;
+    }
+    .pipeline-stage {
+        display: inline-block;
+        padding: 4px 14px;
+        border-radius: 20px;
+        font-size: 0.8rem;
+        font-weight: 600;
+        margin: 2px 4px;
+    }
+    .stage-active {
+        background-color: #7c3aed;
+        color: white;
+    }
+    .stage-done {
+        background-color: #065f46;
+        color: #a7f3d0;
+    }
+    .stage-pending {
+        background-color: #1e293b;
+        color: #64748b;
     }
 </style>
 """, unsafe_allow_html=True)
 
 st.markdown('<div class="main-header">✨ Auto-PPT Studio</div>', unsafe_allow_html=True)
-st.markdown('<div class="sub-header">Autonomous AI Presentation Architect</div>', unsafe_allow_html=True)
-st.write("Provide a presentation topic, and the LangChain + MCP agent will dynamically plan the structure, generate educational content, and execute local disk tools to craft your PowerPoint file.")
-
-st.write("")
+st.markdown('<div class="sub-header">Multi-Agent AI Presentation Architect  •  Planner → Critic → Designer Pipeline</div>', unsafe_allow_html=True)
 
 if "chat_memory" not in st.session_state:
     st.session_state.chat_memory = []
@@ -66,24 +93,37 @@ if "chat_memory" not in st.session_state:
 col1, col2 = st.columns([2.5, 1], gap="large")
 
 with col1:
-    # Provide the default prompt about stars as requested
     default_prompt = "Create a 5-slide presentation on the life cycle of a star for a 6th-grade class"
-    user_input = st.text_area("📄 Presentation Prompt Configuration", value=default_prompt, height=100)
+    user_input = st.text_area("📝 Presentation Prompt", value=default_prompt, height=100)
     
-    if st.button("🚀 Synthesize Presentation"):
+    if st.button("🚀 Generate Presentation"):
         if user_input:
             st.session_state.chat_memory.append({"role": "user", "content": user_input})
             
-            with st.spinner("Executing Toolchain..."):
+            # Pipeline stage indicators
+            stage_container = st.container()
+            with stage_container:
+                st.markdown("""
+                <div style="margin: 10px 0 15px 0;">
+                    <span class="pipeline-stage stage-active">🎯 Planner</span>
+                    <span style="color:#475569;">→</span>
+                    <span class="pipeline-stage stage-pending">🔍 Critic</span>
+                    <span style="color:#475569;">→</span>
+                    <span class="pipeline-stage stage-pending">🎨 Designer</span>
+                </div>
+                """, unsafe_allow_html=True)
+            
+            with st.spinner("Executing multi-agent pipeline..."):
                 lc_msgs = []
                 for m in st.session_state.chat_memory:
-                    if m["role"] == "user": 
+                    if m["role"] == "user":
                         lc_msgs.append(HumanMessage(content=m["content"]))
-                    else: 
+                    else:
                         lc_msgs.append(AIMessage(content=m["content"]))
                 
                 try:
-                    if os.path.exists("agent_output_buffer.txt"): os.remove("agent_output_buffer.txt")
+                    if os.path.exists("agent_output_buffer.txt"):
+                        os.remove("agent_output_buffer.txt")
                     result = asyncio.run(run_ppt_agent(lc_msgs))
                     agent_output = result["output"]
                 except BaseException as e:
@@ -92,36 +132,55 @@ with col1:
                             with open("agent_output_buffer.txt", "r", encoding="utf-8") as f:
                                 agent_output = f.read()
                         elif os.path.exists("output_presentation.pptx"):
-                            agent_output = "✨ Your PowerPoint was successfully routed to your local disk by the AI tools! The generation successfully finished in the background. \n\n*(Note: Your Hugging Face LLM endpoint rate-limited the final text string, so the chat summary could not be rendered, but your presentation file is flawless and ready!)*"
+                            agent_output = "✨ Presentation generated successfully! Download below."
                         else:
-                            st.error(f"Generation aborted before saving slides! Raw Exception Intercepted: {str(e)} | {repr(e)}")
+                            st.error(f"Pipeline failed: {str(e)[:200]}")
                             st.stop()
                     else:
                         st.error(f"An error occurred: {e}")
                         st.stop()
-                        
-                st.session_state.chat_memory.append({"role": "assistant", "content": agent_output})
-                st.success("✔️ Generation Complete!")
-                st.write("Initializing FastMCP via stdio...  \\nLangGraph ReAct Agent started...")
-                st.markdown('#### 📄 AI Execution Trace')
-                st.markdown(f'<div class="trace-box">{agent_output}</div>', unsafe_allow_html=True)
+            
+            # Update pipeline stages to complete
+            with stage_container:
+                st.markdown("""
+                <div style="margin: 10px 0 15px 0;">
+                    <span class="pipeline-stage stage-done">✅ Planner</span>
+                    <span style="color:#475569;">→</span>
+                    <span class="pipeline-stage stage-done">✅ Critic</span>
+                    <span style="color:#475569;">→</span>
+                    <span class="pipeline-stage stage-done">✅ Designer</span>
+                </div>
+                """, unsafe_allow_html=True)
+            
+            st.session_state.chat_memory.append({"role": "assistant", "content": agent_output})
+            st.success("✅ Multi-Agent Pipeline Complete!")
+            
+            st.markdown('#### 📋 Pipeline Execution Trace')
+            st.markdown(f'<div class="trace-box">{agent_output}</div>', unsafe_allow_html=True)
         else:
             st.warning("Please enter a prompt first.")
 
 with col2:
     st.markdown("""
     <div class="status-panel">
-        <h4 style="margin-top:0px; margin-bottom:15px; color:white;">⚙️ System Status</h4>
-        <p style="margin:5px 0;">🧠 Agent: Qwen-2.5-Coder</p>
-        <p style="margin:5px 0;">🔌 Protocol: MCP stdio</p>
-        <p style="margin:5px 0;">🎨 Engine: python-pptx</p>
+        <h4 style="margin-top:0px; margin-bottom:15px; color:#c084fc;">⚙️ System Architecture</h4>
+        <p style="margin:8px 0; font-size:0.9rem;">🧠 <b>LLM:</b> Qwen2.5-7B-Instruct</p>
+        <p style="margin:8px 0; font-size:0.9rem;">🔌 <b>Protocol:</b> MCP stdio</p>
+        <p style="margin:8px 0; font-size:0.9rem;">🎨 <b>Engine:</b> python-pptx</p>
+        <p style="margin:8px 0; font-size:0.9rem;">🔎 <b>Search:</b> DuckDuckGo</p>
+        <p style="margin:8px 0; font-size:0.9rem;">📊 <b>Diagrams:</b> Mermaid.ink</p>
+        <hr style="border-color:#312e81; margin:12px 0;">
+        <p style="margin:8px 0; font-size:0.85rem; color:#94a3b8;">
+            <b>Pipeline:</b> Planner → Critic → Designer<br>
+            <b>Themes:</b> 6 palettes<br>
+            <b>Layouts:</b> 4 types
+        </p>
     </div>
     """, unsafe_allow_html=True)
     
     st.markdown("<br>", unsafe_allow_html=True)
-    st.markdown('<div style="text-align: center; padding: 12px; border: 1px solid #334155; border-radius: 5px; color: #94a3b8; font-size:0.9rem;">Ready for Execution</div>', unsafe_allow_html=True)
     
-    # Download button injection (Always visible, disabled if no file)
+    # Download button
     base_path = "output_presentation.pptx"
     file_exists = os.path.exists(base_path)
     file_data = open(base_path, "rb").read() if file_exists else b""

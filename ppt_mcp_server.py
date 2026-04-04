@@ -1,256 +1,342 @@
 """
-PowerPoint MCP Server (FastMCP Environment)
--------------------------------------------
-This script defines the standalone tool server utilizing python-pptx.
-It acts as a backend node. When executed by the LangGraph agent, it exposes
-3 discrete tools to manipulate an active PowerPoint presentation document.
+PowerPoint MCP Server — Multi-Agent V2
+---------------------------------------
+Design-aware MCP tool server with:
+- 6 predefined theme palettes (space, business, education, tech, nature, medical)
+- 4 layout engines (text_only, text_left_image_right, image_background, title_only)
+- Mermaid diagram → PNG rendering via mermaid.ink API
+- Internet image downloading and embedding
 """
 
 from mcp.server.fastmcp import FastMCP
 from pptx import Presentation
-from pptx.util import Inches, Pt
+from pptx.util import Inches, Pt, Emu
 from pptx.dml.color import RGBColor
+from pptx.enum.text import PP_ALIGN
 import os
 import requests
+import base64
 from io import BytesIO
 
-# Initialize FastMCP Server context. This binds the app routes.
-mcp = FastMCP("PowerPoint MCP Server")
+# ──────────────────────────────────────────────
+# DESIGN SYSTEM: Theme Palettes
+# ──────────────────────────────────────────────
+THEMES = {
+    "space":     {"bg": "#0f0235", "title": "#c084fc", "text": "#e0e7ff", "accent": "#7c3aed"},
+    "business":  {"bg": "#1e293b", "title": "#60a5fa", "text": "#e2e8f0", "accent": "#3b82f6"},
+    "education": {"bg": "#1a1a2e", "title": "#fbbf24", "text": "#fef3c7", "accent": "#f59e0b"},
+    "tech":      {"bg": "#0c0a09", "title": "#22d3ee", "text": "#d4d4d8", "accent": "#06b6d4"},
+    "nature":    {"bg": "#052e16", "title": "#86efac", "text": "#dcfce7", "accent": "#22c55e"},
+    "medical":   {"bg": "#1e1b4b", "title": "#a78bfa", "text": "#e0e7ff", "accent": "#8b5cf6"},
+}
 
-# --- Critical Architectural State ---
-# Global state variable to store the in-memory PPTX object during the lifecycle of the session.
-# Why?: Because MCP commands over standard input/output are isolated tool calls conceptually. 
-# We must store the Presentation object here globally so `add_slide` edits the same active instance
-# that `create_presentation` instantiated.
+def _hex_to_rgb(hex_str: str) -> RGBColor:
+    """Convert '#RRGGBB' string to python-pptx RGBColor."""
+    h = hex_str.lstrip('#')
+    if len(h) != 6:
+        h = "1E1E2E"
+    return RGBColor(int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16))
+
+def _resolve_theme(theme: str) -> dict:
+    """Resolve a theme name to its color palette dict. Falls back to 'space'."""
+    return THEMES.get(theme.lower().strip(), THEMES["space"])
+
+def _set_background(slide, hex_color: str):
+    """Apply a solid background color to a slide."""
+    bg = slide.background
+    bg.fill.solid()
+    bg.fill.fore_color.rgb = _hex_to_rgb(hex_color)
+
+def _download_image(url: str) -> BytesIO | None:
+    """Download an image from URL, return BytesIO stream or None on failure."""
+    try:
+        resp = requests.get(url, timeout=12, headers={"User-Agent": "Mozilla/5.0"})
+        resp.raise_for_status()
+        if len(resp.content) < 500:  # Too small = probably an error page
+            return None
+        return BytesIO(resp.content)
+    except Exception:
+        return None
+
+def _render_mermaid_png(mermaid_code: str) -> BytesIO | None:
+    """Convert Mermaid code to PNG via the free mermaid.ink API."""
+    try:
+        encoded = base64.urlsafe_b64encode(mermaid_code.encode("utf-8")).decode("ascii")
+        url = f"https://mermaid.ink/img/{encoded}?bgColor=!0f0235"
+        resp = requests.get(url, timeout=15)
+        resp.raise_for_status()
+        return BytesIO(resp.content)
+    except Exception:
+        return None
+
+# ──────────────────────────────────────────────
+# MCP SERVER INITIALIZATION
+# ──────────────────────────────────────────────
+mcp = FastMCP("PowerPoint MCP Server")
 _current_prs = None
 
 @mcp.tool()
 def create_presentation() -> str:
-    """
-    Initializes a new blank PowerPoint presentation in memory.
-    Must be called before adding any slides.
-    Returns a success message.
-    """
+    """Initializes a new blank 16:9 widescreen PowerPoint presentation in memory."""
     global _current_prs
     _current_prs = Presentation()
-    # Lock to Modern 16:9 Aspect Ratio
     _current_prs.slide_width = Inches(13.333)
     _current_prs.slide_height = Inches(7.5)
-    return "New blank 16:9 presentation has been created in memory. You can now add slides."
+    return "New blank 16:9 presentation created in memory."
 
 @mcp.tool()
-def open_presentation(filename: str) -> str:
+def add_title_slide(title: str, subtitle: str, theme: str = "space") -> str:
     """
-    Opens an existing PowerPoint file from disk into memory so it can be modified.
-    Use this if the user asks to edit the existing file.
+    Adds a cinematic title slide (first slide of the presentation).
     Args:
-        filename: The filename (e.g., 'output_presentation.pptx')
+        title: The main title text (keep it short).
+        subtitle: The subtitle text below.
+        theme: Theme name (space, business, education, tech, nature, medical).
     """
     global _current_prs
-    if not filename.endswith('.pptx'):
-        filename += '.pptx'
-    if not os.path.exists(filename):
-        return f"Error: No such file '{filename}' exists on disk."
-    
-    _current_prs = Presentation(filename)
-    return f"Successfully opened {filename}. It currently has {len(_current_prs.slides)} slides. You can now modify it."
-
-@mcp.tool()
-def add_title_slide(main_title: str, subtitle: str, theme_color_hex: str = "#1E1E2E") -> str:
-    """
-    Adds a large Title Slide. You should use this for the very first slide of the presentation.
-    Args:
-        main_title: The big main title.
-        subtitle: The smaller sub-text below.
-        theme_color_hex: A 6-character hex color string for the slide background.
-    """
-    global _current_prs
-    if _current_prs is None: return "Error: No presentation exists."
-    
-    slide = _current_prs.slides.add_slide(_current_prs.slide_layouts[0])
-    
-    # Parse dynamic hex color
-    hex_clean = theme_color_hex.lstrip('#')
-    if len(hex_clean) != 6: hex_clean = "1E1E2E"
-    r, g, b = tuple(int(hex_clean[i:i+2], 16) for i in (0, 2, 4))
-    
-    background = slide.background
-    background.fill.solid()
-    background.fill.fore_color.rgb = RGBColor(r, g, b)
-    
-    if slide.shapes.title:
-        slide.shapes.title.text = main_title
-        for p in slide.shapes.title.text_frame.paragraphs:
-            p.font.name = "Segoe UI"
-            p.font.size = Pt(54)
-            p.font.color.rgb = RGBColor(255, 255, 255) # Clean White Header
-            p.font.bold = True
-            
-    if len(slide.placeholders) > 1:
-        sub = slide.placeholders[1]
-        sub.text = subtitle
-        for p in sub.text_frame.paragraphs:
-            p.font.name = "Segoe UI"
-            p.font.size = Pt(28)
-            p.font.color.rgb = RGBColor(200, 200, 200) # Soft grey subtitle
-            
-    return f"Title slide '{main_title}' added successfully."
-
-@mcp.tool()
-def add_slide(title: str, bullet_points: list[str], theme_color_hex: str = "#1E1E2E") -> str:
-    """
-    Adds a new slide to the current presentation.
-    Args:
-        title: The title of the slide.
-        bullet_points: A list of strings, each representing a bullet point.
-        theme_color_hex: A 6-character hex color string for the slide background (e.g. '#FF0000'). Default is dark blue.
-    Returns:
-        A success message indicating the slide was added.
-    """
-    global _current_prs
-    
-    # Protective Exception Handling: Prevents the agent from acting out-of-bounds
     if _current_prs is None:
         return "Error: No presentation exists. Call create_presentation first."
-
-    # Slide array reference. Layout index 1 corresponds inherently to "Title and Content" in standard themes.
-    slide_layout = _current_prs.slide_layouts[1] 
-    slide = _current_prs.slides.add_slide(slide_layout)
     
-    # Parse dynamic hex color
-    hex_clean = theme_color_hex.lstrip('#')
-    if len(hex_clean) != 6: hex_clean = "1E1E2E"
-    r, g, b = tuple(int(hex_clean[i:i+2], 16) for i in (0, 2, 4))
+    colors = _resolve_theme(theme)
+    slide = _current_prs.slides.add_slide(_current_prs.slide_layouts[6])  # Blank layout
+    _set_background(slide, colors["bg"])
     
-    # --- Dynamic Background Styling ---
-    background = slide.background
-    fill = background.fill
-    fill.solid()
-    fill.fore_color.rgb = RGBColor(r, g, b)
-    
-    # Set the title and style it
-    title_shape = slide.shapes.title
-    if title_shape:
-        title_shape.text = title
-        for p in title_shape.text_frame.paragraphs:
-            p.font.name = "Segoe UI"
-            p.font.size = Pt(44)
-            p.font.color.rgb = RGBColor(224, 170, 255) # Pastel purple gradient feel
-            p.font.bold = True
-        
-    # Set bullet points and style them
-    body_shape = slide.placeholders[1]
-    tf = body_shape.text_frame
-    tf.text = "" # Clear default text if any
-    
-    for i, bullet in enumerate(bullet_points):
-        if i == 0:
-            p = tf.paragraphs[0]
-            p.text = bullet
-        else:
-            p = tf.add_paragraph()
-            p.text = bullet
-            p.level = 0
-            
-        # Style each bullet
-        p.font.name = "Segoe UI"
-        p.font.size = Pt(24)
-        p.font.color.rgb = RGBColor(220, 220, 230) # Soft bright white
-        
-    return f"Slide '{title}' added successfully with {len(bullet_points)} stylized bullet points."
-
-@mcp.tool()
-def add_image_slide(title: str, image_url: str, description: str) -> str:
-    """
-    Downloads an image from the internet and adds a new slide specifically displaying that image.
-    Args:
-        title: Title of the slide.
-        image_url: A valid internet URL pointing directly to a .jpg or .png picture.
-        description: A short caption or educational text.
-    """
-    global _current_prs
-    if _current_prs is None: return "Error no presentation exists"
-    
-    # Actively Download Content using HTTP GET locally
-    try:
-        response = requests.get(image_url, timeout=10)
-        response.raise_for_status()
-        image_stream = BytesIO(response.content)
-    except Exception as e:
-        return f"Error downloading image from {image_url}: {str(e)}"
-        
-    # Use Layout 5 ("Title Only") to leave the body entirely empty for absolute custom shape positioning.
-    slide = _current_prs.slides.add_slide(_current_prs.slide_layouts[5]) 
-    
-    slide.background.fill.solid()
-    slide.background.fill.fore_color.rgb = RGBColor(20, 20, 25) # Dark modern slate
-    
-    if slide.shapes.title:
-        slide.shapes.title.text = title
-        for p in slide.shapes.title.text_frame.paragraphs:
-            p.font.name = "Segoe UI"
-            p.font.size = Pt(44)
-            p.font.color.rgb = RGBColor(224, 170, 255)
-            p.font.bold = True
-            
-    # Add picture seamlessly using python-pptx positional scaling engine
-    try:
-        # Centered roughly for 16:9
-        slide.shapes.add_picture(image_stream, Inches(3.5), Inches(1.5), height=Inches(4.5))
-    except Exception as e:
-        return f"Error adding image format to slide: {str(e)}"
-        
-    # Inject Custom HTML-styled Text Box
-    txBox = slide.shapes.add_textbox(Inches(1), Inches(6.2), Inches(11.3), Inches(1))
-    tf = txBox.text_frame
+    # Title — large, centered
+    title_box = slide.shapes.add_textbox(Inches(1), Inches(2.2), Inches(11.3), Inches(1.8))
+    tf = title_box.text_frame
     tf.word_wrap = True
     p = tf.paragraphs[0]
-    p.text = description
+    p.text = title
     p.font.name = "Segoe UI"
-    p.font.size = Pt(20)
-    p.font.color.rgb = RGBColor(220, 220, 230)
+    p.font.size = Pt(54)
+    p.font.color.rgb = _hex_to_rgb(colors["title"])
+    p.font.bold = True
+    p.alignment = PP_ALIGN.CENTER
     
-    return f"Image slide '{title}' correctly downloaded and attached."
+    # Subtitle
+    sub_box = slide.shapes.add_textbox(Inches(2), Inches(4.2), Inches(9.3), Inches(1))
+    tf2 = sub_box.text_frame
+    tf2.word_wrap = True
+    p2 = tf2.paragraphs[0]
+    p2.text = subtitle
+    p2.font.name = "Segoe UI"
+    p2.font.size = Pt(24)
+    p2.font.color.rgb = _hex_to_rgb(colors["text"])
+    p2.alignment = PP_ALIGN.CENTER
+    
+    # Accent bar
+    accent_bar = slide.shapes.add_shape(
+        1, Inches(4.5), Inches(3.9), Inches(4.3), Inches(0.06)  # MSO_SHAPE.RECTANGLE = 1
+    )
+    accent_bar.fill.solid()
+    accent_bar.fill.fore_color.rgb = _hex_to_rgb(colors["accent"])
+    accent_bar.line.fill.background()
+    
+    return f"Title slide '{title}' added."
 
 @mcp.tool()
-def add_speaker_notes(notes: str) -> str:
+def add_slide(title: str, bullet_points: list[str], layout_type: str = "text_only",
+              image_url: str = "", theme: str = "space") -> str:
     """
-    Injects a long paragraph of speaker speech notes into the very last slide that was created.
-    Call this immediately after add_slide.
+    Adds a content slide with flexible layout.
+    Args:
+        title: Slide title (max 6 words).
+        bullet_points: List of short bullet strings (max 4 items, max 6 words each).
+        layout_type: One of 'text_only', 'text_left_image_right', 'image_background', 'title_only'.
+        image_url: Direct URL to a .jpg/.png image (required for image layouts, optional otherwise).
+        theme: Theme name for colors.
     """
     global _current_prs
-    if _current_prs is None or len(_current_prs.slides) == 0:
-        return "Error: No active slides exist to attach notes to."
+    if _current_prs is None:
+        return "Error: No presentation exists."
     
-    slide = _current_prs.slides[-1] # The latest slide
-    notes_slide = slide.notes_slide
-    text_frame = notes_slide.notes_text_frame
-    text_frame.text = notes
-    return "Speaker notes successfully injected into the slide."
+    colors = _resolve_theme(theme)
+    slide = _current_prs.slides.add_slide(_current_prs.slide_layouts[6])  # Blank layout
+    _set_background(slide, colors["bg"])
+    
+    # Download image if provided
+    img_stream = None
+    if image_url and image_url.strip():
+        img_stream = _download_image(image_url.strip())
+    
+    # ── LAYOUT: title_only ──
+    if layout_type == "title_only":
+        box = slide.shapes.add_textbox(Inches(1.5), Inches(2.5), Inches(10.3), Inches(2))
+        tf = box.text_frame
+        tf.word_wrap = True
+        p = tf.paragraphs[0]
+        p.text = title
+        p.font.name = "Segoe UI"
+        p.font.size = Pt(48)
+        p.font.color.rgb = _hex_to_rgb(colors["title"])
+        p.font.bold = True
+        p.alignment = PP_ALIGN.CENTER
+        return f"Title-only slide '{title}' added."
+    
+    # ── LAYOUT: image_background ──
+    if layout_type == "image_background" and img_stream:
+        slide.shapes.add_picture(img_stream, Inches(0), Inches(0),
+                                  width=Inches(13.333), height=Inches(7.5))
+        # Dark overlay textbox
+        overlay = slide.shapes.add_shape(1, Inches(0), Inches(4.5), Inches(13.333), Inches(3))
+        overlay.fill.solid()
+        overlay.fill.fore_color.rgb = RGBColor(0, 0, 0)
+        # Set transparency via XML hack
+        from pptx.oxml.ns import qn
+        solidFill = overlay.fill._fill
+        srgb = solidFill.find(qn("a:solidFill")).find(qn("a:srgbClr"))
+        if srgb is not None:
+            alpha = srgb.makeelement(qn("a:alpha"), {"val": "45000"})
+            srgb.append(alpha)
+        overlay.line.fill.background()
+        
+        # Title over image
+        t_box = slide.shapes.add_textbox(Inches(0.8), Inches(4.7), Inches(11.7), Inches(1))
+        tf = t_box.text_frame
+        tf.word_wrap = True
+        p = tf.paragraphs[0]
+        p.text = title
+        p.font.name = "Segoe UI"
+        p.font.size = Pt(40)
+        p.font.color.rgb = RGBColor(255, 255, 255)
+        p.font.bold = True
+        
+        # Bullets over image
+        if bullet_points:
+            b_box = slide.shapes.add_textbox(Inches(0.8), Inches(5.6), Inches(11.7), Inches(1.5))
+            btf = b_box.text_frame
+            btf.word_wrap = True
+            for i, bp in enumerate(bullet_points[:4]):
+                para = btf.paragraphs[0] if i == 0 else btf.add_paragraph()
+                para.text = f"  •  {bp}"
+                para.font.name = "Segoe UI"
+                para.font.size = Pt(20)
+                para.font.color.rgb = RGBColor(230, 230, 230)
+        
+        return f"Image-background slide '{title}' added."
+    
+    # ── LAYOUT: text_left_image_right ──
+    if layout_type == "text_left_image_right" and img_stream:
+        # Title — full width top
+        t_box = slide.shapes.add_textbox(Inches(0.8), Inches(0.4), Inches(11.7), Inches(1))
+        tf = t_box.text_frame
+        tf.word_wrap = True
+        p = tf.paragraphs[0]
+        p.text = title
+        p.font.name = "Segoe UI"
+        p.font.size = Pt(38)
+        p.font.color.rgb = _hex_to_rgb(colors["title"])
+        p.font.bold = True
+        
+        # Bullets — left 55%
+        b_box = slide.shapes.add_textbox(Inches(0.8), Inches(1.7), Inches(6.2), Inches(5))
+        btf = b_box.text_frame
+        btf.word_wrap = True
+        for i, bp in enumerate(bullet_points[:4]):
+            para = btf.paragraphs[0] if i == 0 else btf.add_paragraph()
+            para.text = f"•  {bp}"
+            para.font.name = "Segoe UI"
+            para.font.size = Pt(22)
+            para.font.color.rgb = _hex_to_rgb(colors["text"])
+            para.space_after = Pt(14)
+        
+        # Image — right 45%
+        try:
+            slide.shapes.add_picture(img_stream, Inches(7.5), Inches(1.5), width=Inches(5.3), height=Inches(4.8))
+        except Exception:
+            pass  # Graceful degradation
+        
+        return f"Text+image slide '{title}' added."
+    
+    # ── LAYOUT: text_only (default fallback) ──
+    # Title
+    t_box = slide.shapes.add_textbox(Inches(0.8), Inches(0.4), Inches(11.7), Inches(1))
+    tf = t_box.text_frame
+    tf.word_wrap = True
+    p = tf.paragraphs[0]
+    p.text = title
+    p.font.name = "Segoe UI"
+    p.font.size = Pt(38)
+    p.font.color.rgb = _hex_to_rgb(colors["title"])
+    p.font.bold = True
+    
+    # Bullets — centered wider
+    b_box = slide.shapes.add_textbox(Inches(1.2), Inches(2.0), Inches(10.9), Inches(4.5))
+    btf = b_box.text_frame
+    btf.word_wrap = True
+    for i, bp in enumerate(bullet_points[:4]):
+        para = btf.paragraphs[0] if i == 0 else btf.add_paragraph()
+        para.text = f"•  {bp}"
+        para.font.name = "Segoe UI"
+        para.font.size = Pt(24)
+        para.font.color.rgb = _hex_to_rgb(colors["text"])
+        para.space_after = Pt(18)
+    
+    # If image available, add it bottom-right as accent
+    if img_stream:
+        try:
+            slide.shapes.add_picture(img_stream, Inches(8.5), Inches(4.5), height=Inches(2.5))
+        except Exception:
+            pass
+    
+    return f"Text slide '{title}' added with {len(bullet_points)} bullets."
+
+@mcp.tool()
+def add_diagram_slide(title: str, mermaid_code: str, theme: str = "space") -> str:
+    """
+    Renders a Mermaid.js diagram to PNG and embeds it into a new slide.
+    Args:
+        title: Slide title.
+        mermaid_code: Raw Mermaid diagram code (e.g., 'flowchart LR ...').
+        theme: Theme name for background colors.
+    """
+    global _current_prs
+    if _current_prs is None:
+        return "Error: No presentation exists."
+    
+    colors = _resolve_theme(theme)
+    
+    # Render via mermaid.ink
+    img_stream = _render_mermaid_png(mermaid_code)
+    if img_stream is None:
+        return f"Error: Could not render Mermaid diagram. Code: {mermaid_code[:100]}"
+    
+    slide = _current_prs.slides.add_slide(_current_prs.slide_layouts[6])  # Blank
+    _set_background(slide, colors["bg"])
+    
+    # Title
+    t_box = slide.shapes.add_textbox(Inches(0.8), Inches(0.3), Inches(11.7), Inches(1))
+    tf = t_box.text_frame
+    tf.word_wrap = True
+    p = tf.paragraphs[0]
+    p.text = title
+    p.font.name = "Segoe UI"
+    p.font.size = Pt(36)
+    p.font.color.rgb = _hex_to_rgb(colors["title"])
+    p.font.bold = True
+    
+    # Diagram — centered
+    try:
+        slide.shapes.add_picture(img_stream, Inches(1.5), Inches(1.5), width=Inches(10.3), height=Inches(5.2))
+    except Exception as e:
+        return f"Error embedding diagram image: {str(e)}"
+    
+    return f"Diagram slide '{title}' added."
 
 @mcp.tool()
 def save_presentation(filename: str) -> str:
     """
     Saves the in-memory presentation to the local disk.
     Args:
-        filename: The name of the file (will be automatically overridden to sync with UI).
-    Returns:
-        A success message.
+        filename: The output filename (auto-overridden to sync with UI).
     """
     global _current_prs
     if _current_prs is None:
         return "Error: No presentation exists to save."
-        
-    # We explicitly force the filename to the exact string Streamlit expects for the Download button
+    
     filename = "output_presentation.pptx"
-        
-    # Save the presentation
     _current_prs.save(filename)
-    
-    # We DO NOT set _current_prs = None here anymore!
-    # This allows conversational chatbot memory to continue editing the file if the user adds further chat prompts!
-    
-    return f"Presentation successfully saved to {filename}"
+    return f"Presentation saved to {filename}"
 
 if __name__ == "__main__":
     mcp.run()
