@@ -113,7 +113,9 @@ with col1:
                 </div>
                 """, unsafe_allow_html=True)
             
+            # Run the multi-agent pipeline with a spinner to indicate progress
             with st.spinner("Executing multi-agent pipeline..."):
+                # Convert chat history to LangChain message format
                 lc_msgs = []
                 for m in st.session_state.chat_memory:
                     if m["role"] == "user":
@@ -122,15 +124,20 @@ with col1:
                         lc_msgs.append(AIMessage(content=m["content"]))
                 
                 try:
+                    # Clean up any existing output buffer file
                     if os.path.exists("agent_output_buffer.txt"):
                         os.remove("agent_output_buffer.txt")
+                    # Run the PPT agent asynchronously
                     result = asyncio.run(run_ppt_agent(lc_msgs))
                     agent_output = result["output"]
                 except BaseException as e:
+                    # Handle specific TaskGroup errors or other pipeline failures
                     if "TaskGroup" in str(e) or "TaskGroup" in repr(e):
+                        # Fallback: check if the buffer file exists to retrieve output
                         if os.path.exists("agent_output_buffer.txt"):
                             with open("agent_output_buffer.txt", "r", encoding="utf-8") as f:
                                 agent_output = f.read()
+                        # Fallback: check if the presentation was at least generated
                         elif os.path.exists("output_presentation.pptx"):
                             agent_output = "✨ Presentation generated successfully! Download below."
                         else:
@@ -180,9 +187,10 @@ with col2:
     
     st.markdown("<br>", unsafe_allow_html=True)
     
-    # Download button
+    # Download button for the generated .pptx file
     base_path = "output_presentation.pptx"
     file_exists = os.path.exists(base_path)
+    # Read file data if it exists for the download button
     file_data = open(base_path, "rb").read() if file_exists else b""
     
     st.download_button(
